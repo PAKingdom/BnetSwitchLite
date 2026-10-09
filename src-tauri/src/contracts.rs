@@ -69,6 +69,7 @@ pub struct AppSnapshot {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LoginIntent {
+    Add,
     #[serde(rename = "reauthenticate")]
     Reauthenticate {
         #[serde(rename = "accountKey")]
@@ -79,9 +80,19 @@ pub enum LoginIntent {
 impl LoginIntent {
     pub fn requested_region(&self) -> Option<LoginRegion> {
         match self {
+            Self::Add => None,
             Self::Reauthenticate { account_key } => {
                 LoginRegion::from_environment(&account_key.environment)
             }
+        }
+    }
+
+    pub fn accepts_account(&self, current: &AccountKey) -> bool {
+        match self {
+            Self::Add => {
+                !current.environment.trim().is_empty() && !current.account_id.trim().is_empty()
+            }
+            Self::Reauthenticate { account_key } => current == account_key,
         }
     }
 }
@@ -195,7 +206,10 @@ mod tests {
                 },
             }
         );
-        assert!(serde_json::from_str::<LoginIntent>(r#"{"kind":"add"}"#).is_err());
+        let add = serde_json::from_str::<LoginIntent>(r#"{"kind":"add"}"#).unwrap();
+        assert_eq!(add, LoginIntent::Add);
+        assert_eq!(serde_json::to_string(&add).unwrap(), r#"{"kind":"add"}"#);
+        assert_eq!(add.requested_region(), None);
     }
 
     #[test]
@@ -232,5 +246,28 @@ mod tests {
             },
         };
         assert_eq!(legacy.requested_region(), None);
+    }
+
+    #[test]
+    fn adding_accepts_a_discovered_identity_but_reauthentication_keeps_the_exact_target() {
+        let target = AccountKey {
+            environment: "cn".into(),
+            account_id: "1:2".into(),
+        };
+        let other = AccountKey {
+            environment: "us".into(),
+            account_id: "1:3".into(),
+        };
+        assert!(LoginIntent::Add.accepts_account(&target));
+        assert!(LoginIntent::Add.accepts_account(&other));
+        assert!(!LoginIntent::Add.accepts_account(&AccountKey {
+            environment: "".into(),
+            account_id: "".into()
+        }));
+        let intent = LoginIntent::Reauthenticate {
+            account_key: target.clone(),
+        };
+        assert!(intent.accepts_account(&target));
+        assert!(!intent.accepts_account(&other));
     }
 }

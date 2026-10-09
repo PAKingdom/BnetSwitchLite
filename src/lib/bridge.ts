@@ -12,6 +12,7 @@ import type {
 type EventHandler = (event: OperationEvent) => void
 
 function serializeLoginIntent(intent: LoginIntent): LoginIntent {
+  if (intent.kind === "add") return { kind: "add" }
   return {
     kind: "reauthenticate",
     accountKey: {

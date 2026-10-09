@@ -364,7 +364,7 @@ export function App() {
   }
 
   const beginLogin = async (intent: LoginIntent) => {
-    if (!(await ensureClient())) return
+    if (!snapshot.client.executablePath && !(await configureClient())) return
     const message =
       snapshot.client.status === "running"
         ? "战网客户端会安全退出，然后打开登录界面。"
@@ -393,6 +393,7 @@ export function App() {
               if (session) void controller.cancelLogin(session.id)
             }}
             onConfigurePath={() => void configureClient()}
+            onAddAccount={() => void beginLogin({ kind: "add" })}
             onOpenClient={() => void controller.openClient()}
             onDelete={(account) => void confirmRemove(account)}
             onRefresh={() => void refreshAccounts()}

@@ -418,7 +418,8 @@ export function useAppController() {
     (intent: LoginIntent) =>
       runAction({
         kind: "login",
-        startTitle: "正在准备重新登录",
+        startTitle:
+          intent.kind === "add" ? "正在准备添加账号" : "正在准备重新登录",
         keepOperationOnSuccess: (nextSnapshot) =>
           nextSnapshot.loginSession !== null,
         task: (onEvent) => appBridge.beginLogin(intent, onEvent),

@@ -74,9 +74,16 @@ impl LoginSessionManager {
             ));
         }
         if !self.active_directory.is_dir() {
-            return Err(AppError::Login(
-                "未找到 Battle.net 配置目录，请先启动并登录一次战网客户端".into(),
-            ));
+            if !matches!(intent, LoginIntent::Add) {
+                return Err(AppError::Login("未找到 Battle.net 配置目录".into()));
+            }
+            before_active_write()?;
+            if let Some(parent) = self.active_directory.parent() {
+                reject_reparse_point(parent)?;
+            }
+            fs::create_dir(&self.active_directory).map_err(|error| {
+                AppError::Login(format!("无法创建 Battle.net 配置目录：{error}"))
+            })?;
         }
         reject_reparse_point(&self.active_directory)?;
 
@@ -96,9 +103,17 @@ impl LoginSessionManager {
             let _ = self.recovery.discard_prepared(&record.id);
             return Err(error);
         }
-        if let Err(error) =
-            clear_saved_account_names(&self.active_directory.join("Battle.net.config"))
-        {
+        let config_path = self.active_directory.join("Battle.net.config");
+        let clear_result = match fs::symlink_metadata(&config_path) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && matches!(intent, LoginIntent::Add) =>
+            {
+                Ok(())
+            }
+            _ => clear_saved_account_names(&config_path, matches!(intent, LoginIntent::Add)),
+        };
+        if let Err(error) = clear_result {
             let rollback = self.rollback_internal(&record.id, restore, before_active_write);
             return match rollback {
                 Ok(()) => Err(error),
@@ -277,7 +292,7 @@ impl LoginSessionManager {
     }
 }
 
-fn clear_saved_account_names(config_path: &Path) -> Result<(), AppError> {
+fn clear_saved_account_names(config_path: &Path, allow_missing: bool) -> Result<(), AppError> {
     reject_reparse_point(config_path)?;
     let bytes = fs::read(config_path)
         .map_err(|error| AppError::Login(format!("无法读取 Battle.net.config：{error}")))?;
@@ -285,6 +300,9 @@ fn clear_saved_account_names(config_path: &Path) -> Result<(), AppError> {
         .map_err(|error| AppError::Login(format!("Battle.net.config 不是有效 JSON：{error}")))?;
     let mut matches = 0_u8;
     clear_saved_account_names_in_value(&mut value, &mut matches)?;
+    if matches == 0 && allow_missing {
+        return Ok(());
+    }
     if matches != 1 {
         return Err(AppError::Login(format!(
             "Battle.net.config 中应恰好包含一个 SavedAccountNames 字段，实际找到 {matches} 个"
@@ -298,6 +316,10 @@ fn clear_saved_account_names(config_path: &Path) -> Result<(), AppError> {
 }
 
 fn saved_account_names_present(config_path: &Path) -> Result<bool, AppError> {
+    match fs::symlink_metadata(config_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        _ => {}
+    }
     reject_reparse_point(config_path)?;
     let bytes = fs::read(config_path)
         .map_err(|error| AppError::Login(format!("无法读取 Battle.net.config：{error}")))?;
@@ -306,7 +328,7 @@ fn saved_account_names_present(config_path: &Path) -> Result<bool, AppError> {
     let mut matches = 0_u8;
     let mut present = false;
     inspect_saved_account_names(&value, &mut matches, &mut present)?;
-    if matches != 1 {
+    if matches > 1 {
         return Err(AppError::Login(format!(
             "Battle.net.config 中应恰好包含一个 SavedAccountNames 字段，实际找到 {matches} 个"
         )));
@@ -489,6 +511,116 @@ mod tests {
         )
         .unwrap();
         manager.require_completed_login_marker(&session.id).unwrap();
+    }
+
+    #[test]
+    fn first_login_starts_without_an_account_or_config_and_rolls_back_new_files() {
+        let temporary = tempdir().unwrap();
+        let data = temporary.path().join("data");
+        let active = temporary.path().join("active");
+        let manager = LoginSessionManager::new(&data, &active).unwrap();
+        let restore = RestoreEngine::new(&data, &active).unwrap();
+        let session = manager
+            .begin(
+                LoginIntent::Add,
+                false,
+                None,
+                authentication_baseline(),
+                &restore,
+                &allow_write,
+            )
+            .unwrap();
+        assert!(!manager.completed_login_marker_present(&session.id).unwrap());
+        fs::write(
+            active.join("Battle.net.config"),
+            br#"{"Client":{"SavedAccountNames":"new-account"}}"#,
+        )
+        .unwrap();
+        assert!(manager.completed_login_marker_present(&session.id).unwrap());
+        let reopened = LoginSessionManager::new(&data, &active).unwrap();
+        assert_eq!(
+            reopened.recover_if_needed(&restore, &allow_write).unwrap(),
+            LoginRecoveryOutcome::RolledBack
+        );
+        assert!(!active.join("Battle.net.config").exists());
+        assert!(reopened.snapshot().unwrap().is_none());
+    }
+
+    #[test]
+    fn adding_to_an_existing_install_clears_old_login_and_cancel_restores_it() {
+        let (_temporary, active, manager, restore) = setup();
+        let original = fs::read(active.join("Battle.net.config")).unwrap();
+        let session = manager
+            .begin(
+                LoginIntent::Add,
+                true,
+                Some(previous_account()),
+                authentication_baseline(),
+                &restore,
+                &allow_write,
+            )
+            .unwrap();
+        assert!(!manager.completed_login_marker_present(&session.id).unwrap());
+        fs::write(
+            active.join("Battle.net.config"),
+            br#"{"Client":{"SavedAccountNames":"new-account"}}"#,
+        )
+        .unwrap();
+        manager
+            .rollback(&session.id, &restore, &allow_write)
+            .unwrap();
+        assert_eq!(
+            fs::read(active.join("Battle.net.config")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn adding_waits_for_a_login_marker_in_an_initial_config_without_account_names() {
+        let (_temporary, active, manager, restore) = setup();
+        fs::write(active.join("Battle.net.config"), br#"{"Client":{}}"#).unwrap();
+        let session = manager
+            .begin(
+                LoginIntent::Add,
+                false,
+                None,
+                authentication_baseline(),
+                &restore,
+                &allow_write,
+            )
+            .unwrap();
+        assert!(!manager.completed_login_marker_present(&session.id).unwrap());
+        fs::write(
+            active.join("Battle.net.config"),
+            br#"{"Client":{"SavedAccountNames":"first-login"}}"#,
+        )
+        .unwrap();
+        manager.require_completed_login_marker(&session.id).unwrap();
+        manager.complete(&session.id).unwrap();
+        assert!(manager.snapshot().unwrap().is_none());
+    }
+
+    #[test]
+    fn first_login_respects_the_write_guard_before_creating_a_directory() {
+        let temporary = tempdir().unwrap();
+        let data = temporary.path().join("data");
+        let active = temporary.path().join("active");
+        let manager = LoginSessionManager::new(&data, &active).unwrap();
+        let restore = RestoreEngine::new(&data, &active).unwrap();
+        assert!(
+            manager
+                .begin(
+                    LoginIntent::Add,
+                    false,
+                    None,
+                    authentication_baseline(),
+                    &restore,
+                    &reject_write
+                )
+                .is_err()
+        );
+        assert!(!active.exists());
+        assert!(manager.snapshot().unwrap().is_none());
     }
 
     #[test]

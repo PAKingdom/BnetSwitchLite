@@ -350,7 +350,9 @@ impl WindowsPlatformService {
             );
             graceful_stop(CLIENT_STOP_TIMEOUT)?;
         }
-        if let Err(error) = wait_for_stable_directory(&self.paths.roaming_dir) {
+        if (self.paths.roaming_dir.exists() || !matches!(intent, LoginIntent::Add))
+            && let Err(error) = wait_for_stable_directory(&self.paths.roaming_dir)
+        {
             return Err(restart_after_preparation_error(
                 was_running,
                 &client_path,
@@ -401,7 +403,9 @@ impl WindowsPlatformService {
             }
         };
 
-        if let Err(launch_error) = launch_for_login(&client_path, login_region) {
+        if let Err(launch_error) = launch_for_login(&client_path, login_region)
+            .and_then(|_| wait_for_client_started(CLIENT_START_TIMEOUT))
+        {
             let rollback = self
                 .login_sessions
                 .rollback(&session.id, &self.restore, &|| {
@@ -1093,8 +1097,13 @@ fn validate_login_identity(intent: &LoginIntent, current: &AccountKey) -> Result
             "登录结果与目标账号不一致，请确认登录的是所选账号。".into(),
         ));
     }
-    let LoginIntent::Reauthenticate { account_key } = intent;
-    if login_evidence_ready(true, Some(current), account_key) {
+    let accepted = match intent {
+        LoginIntent::Add => intent.accepts_account(current),
+        LoginIntent::Reauthenticate { account_key } => {
+            login_evidence_ready(true, Some(current), account_key)
+        }
+    };
+    if accepted {
         Ok(())
     } else {
         Err(AppError::Login(
@@ -1212,5 +1221,27 @@ mod tests {
             ),
             LoginEvidence::WrongAccount
         ));
+    }
+
+    #[test]
+    fn adding_requires_a_new_login_and_discovers_the_account_without_a_target() {
+        let current = key("eu.actual.battle.net", "7:42");
+        for (marker, fresh, account) in [
+            (false, true, Some(current.clone())),
+            (true, false, Some(current.clone())),
+            (true, true, None),
+        ] {
+            assert!(matches!(
+                classify_login_evidence(marker, fresh, account, &LoginIntent::Add),
+                LoginEvidence::Pending
+            ));
+        }
+        assert!(
+            matches!(classify_login_evidence(true, true, Some(current.clone()), &LoginIntent::Add), LoginEvidence::Ready(account) if account == current)
+        );
+        assert_eq!(
+            resolve_login_account(&LoginIntent::Add, Some(current.clone())).unwrap(),
+            current
+        );
     }
 }

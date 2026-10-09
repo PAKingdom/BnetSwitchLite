@@ -445,9 +445,6 @@ impl MacosPlatformService {
             unreachable!();
         };
         let client = self.require_client()?;
-        let LoginIntent::Reauthenticate {
-            account_key: target,
-        } = &intent;
         if completion_control.begin_rollback() {
             return self.cancel_login_after_lock(session_id, report);
         }
@@ -461,9 +458,10 @@ impl MacosPlatformService {
             32,
         );
 
-        if !self.wait_for_login_evidence(&client, target, completion_control)? {
+        let Some(target) = self.wait_for_login_evidence(&client, &intent, completion_control)?
+        else {
             return self.cancel_login_after_lock(session_id, report);
-        }
+        };
 
         emit(
             report,
@@ -485,7 +483,7 @@ impl MacosPlatformService {
             wait_for_stable_config(&self.paths.config)?;
             let catalog = read_account_catalog(&self.paths.cached_data_db)?;
             let authenticated = preferences::capture()?.has_authentication_keys()?;
-            if !login_evidence_ready(authenticated, catalog.current_account_key.as_ref(), target) {
+            if !login_evidence_ready(authenticated, catalog.current_account_key.as_ref(), &target) {
                 return Err(AppError::Login(
                     "登录结果与目标账号不一致，请确认登录的是所选账号。".into(),
                 ));
@@ -546,18 +544,18 @@ impl MacosPlatformService {
     fn wait_for_login_evidence(
         &self,
         client: &ValidatedClient,
-        target: &AccountKey,
+        intent: &LoginIntent,
         completion_control: &LoginCompletionToken,
-    ) -> Result<bool, AppError> {
+    ) -> Result<Option<AccountKey>, AppError> {
         let mut probe_error_started_at = None;
         loop {
             if completion_control.begin_rollback() {
-                return Ok(false);
+                return Ok(None);
             }
 
-            match self.login_evidence_ready(target) {
-                Ok(true) => return Ok(true),
-                Ok(false) => {
+            match self.login_account_ready(intent) {
+                Ok(Some(account)) => return Ok(Some(account)),
+                Ok(None) => {
                     probe_error_started_at = None;
                     if !is_main_client_running(client)? {
                         return Err(AppError::Login("Battle.net 已退出，登录未完成".into()));
@@ -575,17 +573,15 @@ impl MacosPlatformService {
         }
     }
 
-    fn login_evidence_ready(&self, target: &AccountKey) -> Result<bool, AppError> {
+    fn login_account_ready(&self, intent: &LoginIntent) -> Result<Option<AccountKey>, AppError> {
         let authenticated = preferences::capture()?.has_authentication_keys()?;
         if !authenticated {
-            return Ok(false);
+            return Ok(None);
         }
         let catalog = read_account_catalog_for_probe(&self.paths.cached_data_db)?;
-        Ok(login_evidence_ready(
-            true,
-            catalog.current_account_key.as_ref(),
-            target,
-        ))
+        Ok(catalog
+            .current_account_key
+            .filter(|account| intent.accepts_account(account)))
     }
 
     pub fn cancel_login(

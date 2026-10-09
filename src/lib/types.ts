@@ -23,10 +23,8 @@ export interface ClientSnapshot {
   detectedAutomatically: boolean
 }
 
-export type LoginIntent = {
-  kind: "reauthenticate"
-  accountKey: AccountKey
-}
+export type LoginIntent =
+  { kind: "add" } | { kind: "reauthenticate"; accountKey: AccountKey }
 
 export interface LoginSessionSnapshot {
   id: string
