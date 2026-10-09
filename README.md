@@ -2,6 +2,8 @@
 
 本仓库基于原作者 [kabxx/BnetSwitchLite](https://github.com/kabxx/BnetSwitchLite) 修改，感谢原作者提供的 Battle.net 账号切换工具。
 
+本仓库基于原作者 kabxx/BnetSwitchLite 修改，感谢原作者提供的 Battle.net 账号切换工具。 欢迎原作者 kabxx 将本仓库的改动合并、移植或择取到原项目。本仓库沿用 MIT 许可证，无需另行征求我的许可，保留许可证要求的版权声明即可。
+
 ## 与原版的区别
 
 - **一次登录即可保存**：原流程需要先在战网登录、刷新账号，再点击“登录并保存”重新登录。本版新增“添加账号”，在战网登录一次后自动识别并保存登录状态。
