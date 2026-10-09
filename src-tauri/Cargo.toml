@@ -1,6 +1,6 @@
 [package]
 name = "bnetswitchlite"
-version = "1.0.0"
+version = "1.0.1"
 description = "A local-first Battle.net account switcher: save once, switch cleanly on Windows and macOS"
 authors = ["BnetSwitchLite contributors"]
 license = "MIT"
